@@ -91,10 +91,52 @@ body {
   opacity: 0;
   transition: opacity 0.3s;
   z-index: 10;
+  text-align: center;
+  line-height: 1.2;
 }
 
 #chain-display.visible {
   opacity: 1;
+}
+
+#chain-score-popup {
+  position: absolute;
+  top: 35%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 22px;
+  font-weight: bold;
+  color: #44ffaa;
+  text-shadow: 0 0 10px #00ff88;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s, top 0.6s ease-out;
+  z-index: 10;
+}
+
+#chain-score-popup.visible {
+  opacity: 1;
+  top: 30%;
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  10%, 30%, 50%, 70%, 90% { transform: translateX(-3px); }
+  20%, 40%, 60%, 80% { transform: translateX(3px); }
+}
+
+@keyframes shake-heavy {
+  0%, 100% { transform: translateX(0); }
+  10%, 30%, 50%, 70%, 90% { transform: translateX(-6px) translateY(-2px); }
+  20%, 40%, 60%, 80% { transform: translateX(6px) translateY(2px); }
+}
+
+#board-wrapper.shake {
+  animation: shake 0.3s ease-in-out;
+}
+
+#board-wrapper.shake-heavy {
+  animation: shake-heavy 0.4s ease-in-out;
 }
 
 #score-value {
@@ -210,6 +252,7 @@ body {
   <div id="board-wrapper">
     <canvas id="game-canvas" width="300" height="600"></canvas>
     <div id="chain-display"></div>
+    <div id="chain-score-popup"></div>
     <div id="overlay">
       <h2>Chain Tetris</h2>
       <p>連鎖テトリス</p>
@@ -331,11 +374,11 @@ const LOCK_DELAY = 500;     // ms
 const MAX_LOCK_RESETS = 15;
 
 const LINE_CLEAR_DELAY = 300;  // ms - flash animation
-const CHAIN_DELAY = 400;       // ms - pause between chain steps
+const CHAIN_DELAY = 500;       // ms - pause between chain steps (longer to see chains)
 
 // Scoring
 const BASE_LINE_SCORES = [0, 100, 300, 500, 800]; // 0,1,2,3,4 lines
-const CHAIN_MULTIPLIER = 1.5; // multiplier per chain step
+const CHAIN_MULTIPLIER = 2.0; // multiplier per chain step (increased to reward chains)
 const SOFT_DROP_SCORE = 1;
 const HARD_DROP_SCORE = 2;
 
@@ -347,6 +390,8 @@ const holdCtx = holdCanvas.getContext('2d');
 const nextCanvas = document.getElementById('next-canvas');
 const nextCtx = nextCanvas.getContext('2d');
 const chainDisplay = document.getElementById('chain-display');
+const chainScorePopup = document.getElementById('chain-score-popup');
+const boardWrapper = document.getElementById('board-wrapper');
 const overlay = document.getElementById('overlay');
 const scoreEl = document.getElementById('score-value');
 const levelEl = document.getElementById('level-value');
@@ -484,10 +529,52 @@ function checkLines() {
 
     // Show chain display
     if (chainCount > 1) {
-      chainDisplay.textContent = `${chainCount} Chain!`;
+      const excl = '!'.repeat(Math.min(chainCount, 5));
+      chainDisplay.textContent = `${chainCount} Chain${excl}`;
+
+      // Size scales with chain level
+      const size = Math.min(36 + (chainCount - 2) * 8, 72);
+      chainDisplay.style.fontSize = size + 'px';
+
+      // Color escalation: yellow → orange → red
+      let color, glow;
+      if (chainCount <= 3) {
+        color = '#ffdd00'; glow = '#ffaa00';
+      } else if (chainCount <= 5) {
+        color = '#ff8800'; glow = '#ff4400';
+      } else {
+        color = '#ff2200'; glow = '#ff0000';
+      }
+      chainDisplay.style.color = color;
+      chainDisplay.style.textShadow = `0 0 20px ${glow}, 0 0 40px ${glow}`;
+
       chainDisplay.classList.add('visible');
-      setTimeout(() => chainDisplay.classList.remove('visible'), 1200);
+      const displayDuration = 1200 + chainCount * 200;
+      setTimeout(() => chainDisplay.classList.remove('visible'), displayDuration);
+
+      // Screen shake for big chains
+      if (chainCount >= 3) {
+        const shakeClass = chainCount >= 5 ? 'shake-heavy' : 'shake';
+        boardWrapper.classList.remove('shake', 'shake-heavy');
+        void boardWrapper.offsetWidth; // force reflow for re-trigger
+        boardWrapper.classList.add(shakeClass);
+        boardWrapper.addEventListener('animationend', () => {
+          boardWrapper.classList.remove('shake', 'shake-heavy');
+        }, { once: true });
+      }
     }
+
+    // Score popup for each chain step
+    const stepScore = Math.floor(lineScore * chainBonus);
+    chainScorePopup.textContent = `+${stepScore.toLocaleString()}`;
+    if (chainCount > 1) {
+      chainScorePopup.textContent += ` (×${chainBonus.toFixed(1)})`;
+    }
+    chainScorePopup.classList.remove('visible');
+    chainScorePopup.style.top = '35%';
+    void chainScorePopup.offsetWidth;
+    chainScorePopup.classList.add('visible');
+    setTimeout(() => chainScorePopup.classList.remove('visible'), 1000);
 
     updateUI();
 
@@ -505,17 +592,32 @@ function checkLines() {
 }
 
 function removeLinesAndDrop(rows) {
-  // Remove rows top to bottom
-  rows.sort((a, b) => a - b);
+  // Clear the completed rows
   for (const r of rows) {
-    board.splice(r, 1);
-    board.unshift(new Array(COLS).fill(EMPTY));
+    board[r] = new Array(COLS).fill(EMPTY);
+  }
+
+  // Per-cell gravity: each block falls independently in its column
+  // This enables chains by creating new alignments after blocks drop
+  for (let c = 0; c < COLS; c++) {
+    let writeRow = ROWS - 1;
+    for (let r = ROWS - 1; r >= 0; r--) {
+      if (board[r][c] !== EMPTY) {
+        if (writeRow !== r) {
+          board[writeRow][c] = board[r][c];
+          board[r][c] = EMPTY;
+        }
+        writeRow--;
+      }
+    }
+    while (writeRow >= 0) {
+      board[writeRow][c] = EMPTY;
+      writeRow--;
+    }
   }
 
   // After gravity, check for new chain clears
   setTimeout(() => {
-    // Apply "naive gravity" - blocks just fall with the splice above
-    // Now check if new lines formed
     gameState = 'playing';
     checkLines(); // recursive chain check
   }, CHAIN_DELAY);
