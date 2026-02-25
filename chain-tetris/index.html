@@ -646,6 +646,14 @@ function applyConnectedGravity() {
     changed = false;
     const components = findConnectedComponents();
 
+    // Process bottom components first so they settle before upper ones drop
+    // This prevents premature merging that would anchor upper blocks
+    components.sort((a, b) => {
+      const maxA = Math.max(...a.map(([r]) => r));
+      const maxB = Math.max(...b.map(([r]) => r));
+      return maxB - maxA;
+    });
+
     for (const cells of components) {
       const cellSet = new Set(cells.map(([r, c]) => r * COLS + c));
 
