@@ -597,30 +597,84 @@ function removeLinesAndDrop(rows) {
     board[r] = new Array(COLS).fill(EMPTY);
   }
 
-  // Per-cell gravity: each block falls independently in its column
-  // This enables chains by creating new alignments after blocks drop
-  for (let c = 0; c < COLS; c++) {
-    let writeRow = ROWS - 1;
-    for (let r = ROWS - 1; r >= 0; r--) {
-      if (board[r][c] !== EMPTY) {
-        if (writeRow !== r) {
-          board[writeRow][c] = board[r][c];
-          board[r][c] = EMPTY;
-        }
-        writeRow--;
-      }
-    }
-    while (writeRow >= 0) {
-      board[writeRow][c] = EMPTY;
-      writeRow--;
-    }
-  }
+  // Connected-component gravity: adjacent blocks fall as a unit
+  applyConnectedGravity();
 
   // After gravity, check for new chain clears
   setTimeout(() => {
     gameState = 'playing';
     checkLines(); // recursive chain check
   }, CHAIN_DELAY);
+}
+
+// Find all connected components of non-empty cells (4-connected adjacency)
+function findConnectedComponents() {
+  const visited = Array.from({length: ROWS}, () => new Array(COLS).fill(false));
+  const components = [];
+
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      if (board[r][c] !== EMPTY && !visited[r][c]) {
+        const comp = [];
+        const stack = [[r, c]];
+        visited[r][c] = true;
+        while (stack.length > 0) {
+          const [cr, cc] = stack.pop();
+          comp.push([cr, cc]);
+          for (const [dr, dc] of [[0,1],[0,-1],[1,0],[-1,0]]) {
+            const nr = cr + dr;
+            const nc = cc + dc;
+            if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS &&
+                !visited[nr][nc] && board[nr][nc] !== EMPTY) {
+              visited[nr][nc] = true;
+              stack.push([nr, nc]);
+            }
+          }
+        }
+        components.push(comp);
+      }
+    }
+  }
+
+  return components;
+}
+
+// Drop each connected component as a rigid unit until all are settled
+function applyConnectedGravity() {
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const components = findConnectedComponents();
+
+    for (const cells of components) {
+      const cellSet = new Set(cells.map(([r, c]) => r * COLS + c));
+
+      // Compute how far this component can drop
+      let drop = ROWS;
+      for (const [r, c] of cells) {
+        // Only examine bottom-edge cells (no same-component neighbor below)
+        if (r + 1 < ROWS && cellSet.has((r + 1) * COLS + c)) continue;
+        // Count consecutive empty cells below
+        let d = 0;
+        for (let nr = r + 1; nr < ROWS; nr++) {
+          if (board[nr][c] === EMPTY) d++;
+          else break;
+        }
+        drop = Math.min(drop, d);
+      }
+
+      if (drop > 0 && drop < ROWS) {
+        // Move the component down (process bottom-up to avoid overwriting)
+        const sorted = [...cells].sort((a, b) => b[0] - a[0]);
+        for (const [r, c] of sorted) {
+          board[r + drop][c] = board[r][c];
+          board[r][c] = EMPTY;
+        }
+        changed = true;
+        break; // restart with fresh component detection
+      }
+    }
+  }
 }
 
 function spawnNext() {
